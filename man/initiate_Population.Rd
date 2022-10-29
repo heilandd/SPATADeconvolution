@@ -4,7 +4,12 @@
 \alias{initiate_Population}
 \title{initiate_Population}
 \usage{
-initiate_Population(nr_of_random_spots, n_select, nested_ref_meta)
+initiate_Population(
+  nr_of_random_spots,
+  n_select,
+  nested_ref_meta,
+  cell_type_var
+)
 }
 \description{
 initiate_Population

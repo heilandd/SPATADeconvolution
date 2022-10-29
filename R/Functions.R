@@ -154,7 +154,7 @@ getSingleCellDeconv <- function(object,
     base::options(future.globals.maxSize = 600 * 1024^2)
     message("... Run multicore ... ")
 
-    plot(sc_dat$x, sc_dat$y, pch=".")
+    #plot(sc_dat$x, sc_dat$y, pch=".")
     segments <- furrr::future_map_dfr(.x=1:nrow(grid.plot),
                                       .f=function(x){
 
@@ -194,7 +194,7 @@ getSingleCellDeconv <- function(object,
 
   }else{
 
-    plot(sc_dat$x, sc_dat$y, pch=".")
+    #plot(sc_dat$x, sc_dat$y, pch=".")
     segments <- map_dfr(.x=nrow(grid.plot), .f=function(x){
 
 
@@ -362,7 +362,7 @@ DownScaleSeurat <- function(seurat,
 #'
 
 
-runMapping <- function(object,
+runMappingAll <- function(object,
                        scDF,
                        ref.new,
                        cell_type_var="annotation_level_4",
@@ -641,6 +641,256 @@ runMapping <- function(object,
 }
 
 
+#' @title  Run single-cell mapping
+#' @author Dieter Henrik Heiland
+#' @description Mapping the output of "getSingleCellDeconv()"to the best matching cell from the reference dataset
+#' @inherit
+#' @param object SPATA2 object
+#' @param scDF Data.frame; Output of the getSingleCellDeconv()
+#' @param ref.new Seurat Object; Reference dataset used for runRCTD()
+#' @param cell_type_var Character value; The col of the Seurat meta data indicating the cell type annotations
+#' @param model Character value; Model "BF" randomly select cell compositions and select the best match. Model "oGA" will perform a conditional genetic algorithm to find the best match.
+#' @param subset_ref Logical, if TRUE, Seurat object will we downsized to increase speed.
+#' @param only_var Logical, if TRUE only consider variable genes for mapping
+#' @param n_feature Integer value: Number of variable genes
+#' @param max_cells Integer value: Number of cells for downsampling
+#' @param AE_norm  Logical, if TRUE use an autoencoder for data integration and normalization (recommended)
+#' @param multicore Logical, if TRUE use multicore
+#' @param workers Integer, Number of cors
+#' @param iter Integer: For model BF: Number of random spot compositions; For model oGA size of initial population
+#' @param iter_GA Integer: Number of iterations of the oGA model
+#' @param nr_mut Integer: Number of mutations
+#' @param nr_offsprings Integer: Number of offsprings
+#' @param cross_over_point Numeric value: Percentage of cross-over cutt-off
+#' @param ram Integer: GB of ram can be used for multicore session
+#' @return
+#' @examples
+#' @export
+#'
+
+runMappingGA <- function(object,
+                       scDF=cell_types,
+                       reference,
+                       cell_type_var="annotation_level_4",
+                       metaSpace,
+                       workers=16,
+                       iter=200,
+                       iter_GA=20,
+                       nr_mut=2,
+                       nr_offsprings=7,
+                       cross_over_point=0.5,
+                       ram=60
+){
+  message(paste0("Start: ",print(Sys.time())))
+
+  base::options(future.fork.enable = TRUE)
+  future::plan("multisession", workers = workers)
+  future::supportsMulticore()
+  base::options(future.globals.maxSize = ram* 10* 1024^2)
+  message("... Run multicore ... ")
+
+  spots <- unique(scDF$barcodes)
+
+  #Load data that are required
+  message("--- Load data ----")
+  mat.ref <- reference %>% Seurat::GetAssayData()
+  genes.ref <- rownames(mat.ref)
+
+  object <- SPATA2::setActiveExpressionMatrix(object, "scaled")
+  mat.spata <- SPATA2::getExpressionMatrix(object)
+  genes.spata <- rownames(mat.spata)
+
+  # Reduce genes to meta space
+  metaSpace.genes <- as.data.frame(do.call(rbind, metaSpace))
+  genes <- unique(metaSpace.genes$gene)
+
+  message("--- Merge Data ----")
+  mat.ref <- mat.ref[genes, ]
+  mat.spata <- mat.spata[genes, ]
+
+  mat.ref %>% dim()
+
+  message("--- Run Mapping ----")
+
+  nr_of_random_spots=iter
+
+  ref_meta <-
+    reference@meta.data[colnames(mat.ref),c("nCount_RNA",cell_type_var)] %>%
+    as.data.frame()
+
+
+  #nested groups
+  nested_ref_meta <- ref_meta %>% rownames_to_column("cells") %>% group_by(!!sym(cell_type_var)) %>% nest()
+
+  data.new <-furrr::future_map_dfr(.x=1:length(spots),
+                                   .f=function(i){
+                                     message("--- Model: oGA will be applied")
+                                     #print(i)
+
+
+
+                                     bc_run <- spots[i]
+                                     data <-
+                                       scDF %>%
+                                       dplyr::filter(barcodes==bc_run) %>%
+                                       dplyr::mutate(celltypes=as.character(celltypes)) %>%
+                                       dplyr::arrange(celltypes)
+
+                                     nr_cells <- nrow(data)
+                                     n_select <- data %>% count(celltypes)
+
+                                     #Initiate population
+                                     pop <- SPATADeconvolution::initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var)
+                                     dim(pop)
+
+                                     qc <- list()
+
+
+                                     for(zz in 1:iter_GA){
+
+
+                                       # Validate the initial Pop
+
+
+                                       validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) SPATADeconvolution::fitness(pop[j,], nr_cells)) %>% unlist()
+                                       names(validate_randoms_select) <- 1:nr_of_random_spots
+                                       validate_randoms_select <- out[order(-out)]
+
+                                       #validate_randoms_select <-
+                                      #   lapply(1:nr_of_random_spots, function(j) SPATADeconvolution::fitness(pop[j,], nr_cells)) %>%
+                                      #   unlist() %>%
+                                      #   as.data.frame() %>%
+                                      #   rownames_to_column("order") %>%
+                                      #   rename("cor":=.) %>%
+                                      #   arrange(desc(cor))
+
+                                       #select parents
+                                       parents <- pop[as.numeric(names(validate_randoms_select)[1:2]), ]
+                                       qc[[zz]] <- mean(validate_randoms_select[1:2])
+                                       print(qc[[zz]])
+
+                                       #Create Children
+                                       offspring_2 <- cross_over(parents,cross_over_point)
+                                       offspring <- mutation_GA(offspring_2,nr_mut, nr_offsprings)
+
+                                       # remove old parents
+                                       remove <- as.numeric(tail(validate_randoms_select, dim(offspring)[1]) %>% names())
+                                       pop.new <- rbind(pop[-remove, ], offspring)
+
+                                       #update pop
+                                       pop <- pop.new
+
+                                     }
+
+                                     validate_randoms_select <-
+                                       map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells)}) %>%
+                                       unlist() %>%
+                                       as.data.frame() %>%
+                                       rownames_to_column("order") %>%
+                                       rename("cor":=.) %>%
+                                       arrange(desc(cor))
+
+                                     pop_select <- pop[as.numeric(validate_randoms_select$order[1]), ]
+
+
+                                     select_cells <- names(which(pop_select==1))
+
+                                     data$best_match <- select_cells
+
+                                     #check
+                                     #data$anno <- ref.new@meta.data[data$best_match, ]$annotation_level_4
+
+
+                                     return(data)
+
+
+                                   },
+                                   .progress = T,
+                                   .options = furrr::furrr_options(seed = TRUE))
+
+
+
+  message(paste0("End: ",print(Sys.time())))
+  return(data.new)
+
+
+}
+
+#' @title  Run single-cell mapping
+#' @author Dieter Henrik Heiland
+#' @description Mapping the output of "getSingleCellDeconv()"to the best matching cell from the reference dataset
+#' @inherit
+#' @param object SPATA2 object
+#' @param scDF Data.frame; Output of the getSingleCellDeconv()
+#' @param cell_type_var Character value; The col of the Seurat meta data indicating the cell type annotations
+#' @param MetaVol Number of genes in meta space
+#' @param ref.new Seurat Object; Reference dataset used for runRCTD()
+#' @return
+#' @examples
+#' @export
+#'
+defineMetaSpace <- function(object,
+                            reference,
+                            cell_type_var="annotation_level_4",
+                            scDF,
+                            MetaVol=20){
+  cell_types <- scDF
+  # getSPATA genes
+  st.genes <- object %>% SPATA2::getGenes()
+
+  # Subset shared genes
+  genes.shared <- intersect(reference@assays$RNA@counts %>% rownames(), st.genes)
+  reference <- subset(reference, features=genes.shared)
+
+  #Subset annotations
+  annotations <- unique(cell_types$celltypes)
+  cells <- reference@meta.data %>% as.data.frame() %>% filter(!!sym(cell_type_var) %in% annotations) %>% rownames()
+  reference <- subset(reference, cells=cells)
+
+  message("Get DE per cluster")
+  Idents(reference) <- cell_type_var
+  diff_gene_exp <- Seurat::FindAllMarkers(reference, max.cells.per.ident = 500)
+
+  message("Get PC1 for variance")
+  pca <- map(.x=1:length(annotations), .f=function(i){
+
+    cells <- reference@meta.data %>% as.data.frame() %>% filter(!!sym(cell_type_var)==annotations[i] ) %>% rownames()
+    message(paste0("Size of the explored subcluster: ", length(cells)))
+    sub <- subset(reference, cells=cells)
+
+    sub <- sub %>% Seurat::RunPCA(verbose=F, npcs=2)
+    pca1 <- sub@reductions$pca@feature.loadings[,1] %>% as.data.frame()
+    names(pca1) <- "PCA1"
+    pca1$cluster <- annotations[i]
+
+
+
+
+    return(pca1)
+
+  })
+  names(pca) <- annotations
+
+  # Get the top genes of spe/var
+
+  optimal <- map(.x=1:length(annotations), .f=function(i){
+
+    anno <- as.character(annotations[i])
+    DE <- diff_gene_exp %>% filter(cluster==anno)
+    pca.genes <- pca[[anno]] %>% rownames_to_column("gene")
+
+    merge <- DE %>% dplyr::select(gene, avg_log2FC) %>% left_join(., pca.genes, "gene") %>% na.omit()
+    merge <- merge %>% arrange(desc(avg_log2FC),desc(PCA1)) %>% head(MetaVol)
+
+    return(merge)
+
+  })
+  names(optimal) <- annotations
+
+  return(optimal)
+
+}
+
 
 ###############################################################
 ###########   GA Functions
@@ -650,13 +900,17 @@ runMapping <- function(object,
 #' @author Dieter Henrik Heiland
 #' @description fitness
 #' @inherit
+#' @return
+#' @examples
+#' @export
+#'
 fitness <- function(x,nr_cells){
 
   if(nr_cells==1){
     y <- cor(as.numeric(mat.ref[,x==1]),
              as.numeric(mat.spata[,bc_run]))
   }else{
-    y <- cor(as.numeric(mat.ref[,x==1] %>% rowMeans()),
+    y <- cor(as.numeric(as.matrix(mat.ref[,x==1]) %>% rowMeans()),
              as.numeric(mat.spata[,bc_run]))
   }
   return(y)
@@ -666,12 +920,25 @@ fitness <- function(x,nr_cells){
 #' @author Dieter Henrik Heiland
 #' @description initiate_Population
 #' @inherit
+#' @return
+#' @examples
+#' @export
 #'
-initiate_Population <- function(nr_of_random_spots, n_select,nested_ref_meta){
+#'
+initiate_Population <- function(nr_of_random_spots,
+                                n_select,
+                                nested_ref_meta,
+                                cell_type_var){
 
-  mat <- matrix(0, nrow=nr_of_random_spots, ncol=ncol(mat.ref))
-  colnames(mat)=colnames(mat.ref)
   select <- nested_ref_meta %>% filter(!!sym(cell_type_var) %in%  n_select$celltypes)
+
+  cells.select <- map(1:nrow(select), .f= ~select$data[[.x]]$cells) %>% unlist()
+  mat.select <- mat.ref[,cells.select]
+  dim(mat.select)
+
+  mat <- matrix(0, nrow=nr_of_random_spots, ncol=ncol(mat.select))
+  colnames(mat)=colnames(mat.select)
+
 
   for(x in 1:nr_of_random_spots){
     selected_cells <- map(.x=1:nrow(select), .f=function(i){
@@ -688,41 +955,29 @@ initiate_Population <- function(nr_of_random_spots, n_select,nested_ref_meta){
 #' @author Dieter Henrik Heiland
 #' @description cross_over
 #' @inherit
+#' @return
+#' @examples
+#' @export
+#'
 cross_over <- function(parents,cross_over_point=0.5){
 
-  parents_out <-
-    parents %>%
-    apply(1, function(x) which(x == 1)) %>% t()
-  #as.data.frame() %>%
-  #filter(!V1 %in% intersect(V1,V2)) %>%
-  #filter(!V2 %in% intersect(V1,V2)) %>%
-  #t()
+  cross_over_select <- c(ncol(parents)*cross_over_point) %>% round()
 
-  #message(length(intersect(parents_out[1,], parents_out[2,])))
+  cross <- parents
+  cross[1, cross_over_select:ncol(parents)] <- parents[2, cross_over_select:ncol(parents)]
+  cross[2, cross_over_select:ncol(parents)] <- parents[1, cross_over_select:ncol(parents)]
 
-  cross_over_select <- c(ncol(parents_out)*cross_over_point) %>% round()
-  parents_out <- parents_out[, 1:cross_over_select]
-
-
-  # cross values
-  parents[1, parents_out[1,]]=0
-  parents[1, parents_out[2,]]=1
-
-  parents[2, parents_out[2,]]=0
-  parents[2, parents_out[1,]]=1
-
-  #message(length(which(parents[1, ]==1)))
-  #message(length(which(parents[2, ]==1)))
-
-
-
-  return(parents)
+  return(cross)
 }
 
 #' @title  mutation_GA
 #' @author Dieter Henrik Heiland
 #' @description mutation_GA
 #' @inherit
+#' @return
+#' @examples
+#' @export
+#'
 mutation_GA <- function(offspring_2,nr_mut, nr_offsprings){
 
   #Create random selection
@@ -853,4 +1108,315 @@ getSubColors <- function(tab,
   return(out_4)
 
 }
+
+
+###############################################################
+###########   Infer Cell Position
+###############################################################
+
+#' @title  Run single-cell mapping
+#' @author Dieter Henrik Heiland
+#' @description Mapping the output of "getSingleCellDeconv()"to the best matching cell from the reference dataset
+#' @inherit
+#' @param object SPATA object
+#' @param sample.folder path to Visium sample folder
+#' @return SPATA object
+#' @examples
+#' @export
+#'
+
+inferCellPositionsfromHE <- function(object,sample.folder){
+
+  message("Create ST Object")
+  sample_name <- SPATA2::getSampleNames(object)
+
+
+  input.df <- data.frame(samples=paste0(sample.folder, "/outs/filtered_feature_bc_matrix.h5"),
+                         spotfiles=paste0(sample.folder, "/outs/spatial/tissue_positions_list.csv"),
+                         imgs=paste0(sample.folder, "/outs/spatial/tissue_hires_image.png"),
+                         json=paste0(sample.folder, "/outs/spatial/scalefactors_json.json"))
+  library(imager)
+  library(Seurat)
+  se <- STutility::InputFromTable(infotable = input.df,
+                                  min.gene.count = 1,
+                                  min.gene.spots = 1,
+                                  min.spot.count = 5,
+                                  platform =  "Visium")
+
+
+  se <- STutility::LoadImages(se, time.resolve = FALSE, xdim=1000, verbose = F)
+  se <- STutility::MaskImages(se, verbose = F)
+  se <- STutility::AlignImages(se, verbose = F)
+
+  message("Infer Cell Position")
+  se <- STutility::Create3DStack(se, verbose = F)
+  stack_3d <- setNames(STutility::GetStaffli(se)@scatter.data, c("x", "y", "z", "grid.cell"))
+  img <- EBImage::Image(se@tools$Staffli@rasterlists$processed$`1` %>% as.matrix() %>% t(), colormode = "Color")
+  #plot(img)
+  #points(stack_3d$x, stack_3d$y)
+
+  dim.org <- object@images[[sample_name]]@image %>% dim()
+  dim.proc <- img %>% dim()
+  scale.f <- dim.org[1]/dim.proc[1]
+  message("Transfer to SPATA")
+  nuc.data <-
+    stack_3d %>%
+    dplyr::mutate(Cell=paste0("Cell_", 1:nrow(.))) %>%
+    dplyr::select(Cell,x,y) %>%
+    dplyr::mutate(x=x*scale.f,
+                  y=y*scale.f)
+  object@spatial[[sample_name]]$Cell_coords <- nuc.data
+
+  return(object)
+}
+
+
+
+
+
+
+
+
+
+###############################################################
+###########   Image or DF sum per SPOT
+###############################################################
+
+#' @title  runSegmentfromImage
+#' @author Dieter Henrik Heiland
+#' @description Get summary of image intensity per spot
+#' @inherit
+#' @param object SPATA object
+#' @param Image EBImage object
+#' @param spot_extension Extent the area of the spot (from SPATA2 Image processing)
+#' @param multicore Use multicore !!recommended!!
+#' @param workers Number of workers for multisession
+#' @return data.frame with intensity per spot
+#' @examples
+#' @export
+#'
+runSegmentfromImage<- function(object, Image, spot_extension=0, multicore=T, workers = 16){
+
+  #message fine correct spot size
+
+  SPATA2::check_method(object)
+  if (spot_extension > 0.7) stop("The spot extension will cause overlap in segmentation ")
+
+  # Get spot radius
+  getSpotRadius <- function(object){
+    of_sample <- SPATA2::getSampleNames(object)
+    coords <- SPATA2::getCoordsDf(object)
+    bc_origin <- coords$barcodes
+    bc_destination <- coords$barcodes
+    d <-
+      tidyr::expand_grid(bc_origin, bc_destination) %>%
+      dplyr::left_join(x = ., y = dplyr::select(coords, bc_origin = barcodes, xo = x, yo = y), by = "bc_origin") %>%
+      dplyr::left_join(x = ., y = dplyr::select(coords, bc_destination = barcodes, xd = x, yd = y), by = "bc_destination") %>%
+      dplyr::mutate(distance = base::round(base::sqrt((xd - xo)^2 + (yd - yo)^2), digits = 0)) %>%
+      dplyr::filter(distance!=0) %>%
+      dplyr::pull(distance) %>%
+      min()
+
+    r = (d * c(55/100))/2
+
+    return(r)
+  }
+
+  r <- getSpotRadius(object)
+  if (!is.null(spot_extension)) {r = r + (r * spot_extension)}
+  grid.plot <- SPATA2::getCoordsDf(object)
+
+  dim(Image)
+  if(dim(Image)[3]!=1){ Image <- Reduce(`+`, map(.x=1:dim(Image)[3], ~Image[,,.x])) }
+
+  sc_dat <- reshape2::melt(Image)
+  head(sc_dat)
+
+  names(sc_dat)=c("x","y","var")
+
+  yrange <- range(sc_dat$y)
+  sc_dat$y <- (yrange[2] - sc_dat$y) + yrange[1]
+
+
+  if (multicore == T) {
+    base::options(future.fork.enable = TRUE)
+    future::plan("multiprocess", workers = workers)
+    future::supportsMulticore()
+    base::options(future.globals.maxSize = 600 * 1024^2)
+    message("... Run multicore ... ")
+
+    #plot(sc_dat$x, sc_dat$y, pch = ".")
+    segments <- furrr::future_map_dfr(.x = 1:nrow(grid.plot),
+                                      .f = function(x) {
+                                        segment <- swfscMisc::circle.polygon(x = grid.plot$x[x],
+                                                                             y = grid.plot$y[x], radius = r, poly.type = "cartesian") %>% as.data.frame()
+
+
+                                        nuc <- sp::point.in.polygon(pol.x = segment$x,
+                                                                    pol.y = segment$y,
+                                                                    point.x = sc_dat$x,
+                                                                    point.y = sc_dat$y)
+
+
+                                        intensity <- sc_dat[nuc == 1, ]$var
+
+                                        out <- data.frame(barcodes = grid.plot$barcodes[x],
+                                                          mean=mean(intensity),
+                                                          median=median(intensity),
+                                                          max=max(intensity),
+                                                          min=min(intensity),
+                                                          sd=sd(intensity))
+
+                                        return(out)
+                                      }, .progress = T)
+  }
+  else {
+    segments <- map_dfr(.x = 1:nrow(grid.plot), .f = function(x) {
+      segment <- swfscMisc::circle.polygon(x = grid.plot$x[x],
+                                           y = grid.plot$y[x], radius = r, poly.type = "cartesian") %>%
+        as.data.frame()
+      polygon(segment, border = "red")
+      nuc <- sp::point.in.polygon(pol.x = segment$x, pol.y = segment$y,
+                                  point.x = sc_dat$x, point.y = sc_dat$y)
+      intensity <- sc_dat[nuc == 1, ]$var
+
+      out <- data.frame(barcodes = grid.plot$barcodes[x],
+                        mean=mean(intensity),
+                        median=median(intensity),
+                        max=max(intensity),
+                        min=min(intensity),
+                        sd=sd(intensity))
+
+      return(out)
+    })
+  }
+
+  # Summarize on barcode level
+
+  return(segments)
+
+}
+
+#' @title  runSegmentfromCoords
+#' @author Dieter Henrik Heiland
+#' @description Get summary of image intensity per spot
+#' @inherit
+#' @param object SPATA object
+#' @param Coord_file data.frame with cell or other coordinates if NULL the SPATAwrappers::getNucleusPosition will look into saves scCoords
+#' @param spot_extension Extent the area of the spot (from SPATA2 Image processing)
+#' @param multicore Use multicore !!recommended!!
+#' @param workers Number of workers for multisession
+#' @return data.frame with intensity per spot
+#' @examples
+#' @export
+#'
+runSegmentfromCoords <- function(object, Coord_file=NULL, spot_extension=0, multicore=T,workers = 16){
+
+  #message fine correct spot size
+
+  SPATA2::check_method(object)
+  if (spot_extension > 0.7) stop("The spot extension will cause overlap in segmentation ")
+  if(is.null(Coord_file)){sc_dat <- SPATAwrappers::getNucleusPosition(object)}else{
+    if (!any(names(Coord_file) %in% c("Cell","x","y"))) stop("Coord_file does not contain the variables: Cell,x,y ... ")
+    sc_dat <- Coord_file[, c("Cell","x","y")]
+  }
+
+  # Get spot radius
+  getSpotRadius <- function(object){
+    of_sample <- SPATA2::getSampleNames(object)
+    coords <- SPATA2::getCoordsDf(object)
+    bc_origin <- coords$barcodes
+    bc_destination <- coords$barcodes
+    d <-
+      tidyr::expand_grid(bc_origin, bc_destination) %>%
+      dplyr::left_join(x = ., y = dplyr::select(coords, bc_origin = barcodes, xo = x, yo = y), by = "bc_origin") %>%
+      dplyr::left_join(x = ., y = dplyr::select(coords, bc_destination = barcodes, xd = x, yd = y), by = "bc_destination") %>%
+      dplyr::mutate(distance = base::round(base::sqrt((xd - xo)^2 + (yd - yo)^2), digits = 0)) %>%
+      dplyr::filter(distance!=0) %>%
+      dplyr::pull(distance) %>%
+      min()
+
+    r = (d * c(55/100))/2
+
+    return(r)
+  }
+
+  r <- getSpotRadius(object)
+  if (!is.null(spot_extension)) {r = r + (r * spot_extension)}
+  grid.plot <- SPATA2::getCoordsDf(object)
+
+
+  if (multicore == T) {
+    base::options(future.fork.enable = TRUE)
+    future::plan("multiprocess", workers = workers)
+    future::supportsMulticore()
+    base::options(future.globals.maxSize = 600 * 1024^2)
+    message("... Run multicore ... ")
+
+    #plot(sc_dat$x, sc_dat$y, pch = ".")
+    segments <- furrr::future_map_dfr(.x = 1:nrow(grid.plot),
+                                      .f = function(x) {
+                                        segment <- swfscMisc::circle.polygon(x = grid.plot$x[x],
+                                                                             y = grid.plot$y[x], radius = r, poly.type = "cartesian") %>%
+                                          as.data.frame()
+                                        nuc <- sp::point.in.polygon(pol.x = segment$x,
+                                                                    pol.y = segment$y, point.x = sc_dat$x, point.y = sc_dat$y)
+                                        cells <- sc_dat[nuc == 1, ]$Cell
+                                        if(is_empty(cells)){
+                                          return <- data.frame(barcodes = grid.plot$barcodes[x],
+                                                               Nr_of_cells = 0, cells = NA)
+                                        }else{
+                                          cells_in_spot <- sum(nuc)
+                                          return <- data.frame(barcodes = grid.plot$barcodes[x],
+                                                               Nr_of_cells = cells_in_spot, cells = cells)
+                                        }
+                                        return(return)
+                                      }, .progress = T)
+  }
+  else {
+    plot(sc_dat$x, sc_dat$y, pch = ".")
+    segments <- map_dfr(.x = 1:nrow(grid.plot), .f = function(x) {
+      segment <- swfscMisc::circle.polygon(x = grid.plot$x[x],
+                                           y = grid.plot$y[x], radius = r, poly.type = "cartesian") %>%
+        as.data.frame()
+      polygon(segment, border = "red")
+      nuc <- sp::point.in.polygon(pol.x = segment$x, pol.y = segment$y,
+                                  point.x = sc_dat$x, point.y = sc_dat$y)
+      cells <- sc_dat[nuc == 1, ]$Cell
+      if(is_empty(cells)){
+        return <- data.frame(barcodes = grid.plot$barcodes[x],
+                             Nr_of_cells = 0, cells = NA)
+      }else{
+        cells_in_spot <- sum(nuc)
+        return <- data.frame(barcodes = grid.plot$barcodes[x],
+                             Nr_of_cells = cells_in_spot, cells = cells)
+      }
+
+      return(return)
+    })
+  }
+
+  # Summarize on barcode level
+
+  out <-
+    segments %>%
+    filter(Nr_of_cells!=0) %>%
+    group_by(barcodes) %>%
+    summarise(Cells=length(barcodes)) %>%
+    left_join(grid.plot %>% dplyr::select(barcodes), ., "barcodes") %>%
+    replace_na(list(Cells = 0))
+
+  out <- list(out, segments)
+  names(out) <- c("Feature_cells", "DF_Segments")
+  return(out)
+
+}
+
+
+
+
+
+
+
+
 
