@@ -721,7 +721,8 @@ runMappingGA <- function(object,
   #nested groups
   nested_ref_meta <- ref_meta %>% rownames_to_column("cells") %>% group_by(!!sym(cell_type_var)) %>% nest()
 
-  fitness <- function(x,nr_cells){
+
+  fitness <- function(x,nr_cells,bc_run){
 
     if(nr_cells==1){
       y <- cor(as.numeric(mat.ref[,x==1]),
@@ -820,6 +821,8 @@ runMappingGA <- function(object,
 
 
 
+
+
   data.new <-furrr::future_map_dfr(.x=1:length(spots),
                                    .f=function(i){
                                      bc_run <- spots[i]
@@ -837,7 +840,7 @@ runMappingGA <- function(object,
 
                                      run <- function(zz){
 
-                                       validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) fitness(pop[j,], nr_cells)) %>% unlist()
+                                       validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) fitness(pop[j,], nr_cells,bc_run)) %>% unlist()
                                        names(validate_randoms_select) <- 1:nr_of_random_spots
                                        validate_randoms_select <- validate_randoms_select[order(-validate_randoms_select)]
 
@@ -860,7 +863,7 @@ runMappingGA <- function(object,
                                      }
 
                                      qc <- lapply(1:iter_GA, function(zz) run(zz))
-
+                                     gc()
                                      validate_randoms_select <-
                                        map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells)}) %>%
                                        unlist() %>%
@@ -868,17 +871,10 @@ runMappingGA <- function(object,
                                        rownames_to_column("order") %>%
                                        rename("cor":=.) %>%
                                        arrange(desc(cor))
-
                                      pop_select <- pop[as.numeric(validate_randoms_select$order[1]), ]
-
-
                                      select_cells <- names(which(pop_select==1))
 
                                      data$best_match <- select_cells
-
-                                     #check
-                                     #data$anno <- ref.new@meta.data[data$best_match, ]$annotation_level_4
-
 
                                      return(data)
 
@@ -892,6 +888,239 @@ runMappingGA <- function(object,
 
 
 }
+
+
+#' @title  Run single-cell mapping
+#' @author Dieter Henrik Heiland
+#' @description Mapping the output of "getSingleCellDeconv()"to the best matching cell from the reference dataset
+#' @inherit
+#' @param object SPATA2 object
+#' @param scDF Data.frame; Output of the getSingleCellDeconv()
+#' @param ref.new Seurat Object; Reference dataset used for runRCTD()
+#' @param cell_type_var Character value; The col of the Seurat meta data indicating the cell type annotations
+#' @param model Character value; Model "BF" randomly select cell compositions and select the best match. Model "oGA" will perform a conditional genetic algorithm to find the best match.
+#' @param subset_ref Logical, if TRUE, Seurat object will we downsized to increase speed.
+#' @param only_var Logical, if TRUE only consider variable genes for mapping
+#' @param n_feature Integer value: Number of variable genes
+#' @param max_cells Integer value: Number of cells for downsampling
+#' @param AE_norm  Logical, if TRUE use an autoencoder for data integration and normalization (recommended)
+#' @param multicore Logical, if TRUE use multicore
+#' @param workers Integer, Number of cors
+#' @param iter Integer: For model BF: Number of random spot compositions; For model oGA size of initial population
+#' @param iter_GA Integer: Number of iterations of the oGA model
+#' @param nr_mut Integer: Number of mutations
+#' @param nr_offsprings Integer: Number of offsprings
+#' @param cross_over_point Numeric value: Percentage of cross-over cutt-off
+#' @param ram Integer: GB of ram can be used for multicore session
+#' @return
+#' @examples
+#' @export
+#'
+
+runMappingGA_solo <- function(object,
+                         scDF=cell_types,
+                         reference,
+                         cell_type_var="annotation_level_4",
+                         metaSpace,
+                         iter=200,
+                         iter_GA=20,
+                         nr_mut=2,
+                         nr_offsprings=7,
+                         cross_over_point=0.5
+){
+  message(paste0("Start: ",print(Sys.time())))
+
+  spots <- unique(scDF$barcodes)
+
+  #Load data that are required
+  message("--- Load data ----")
+  mat.ref <- reference %>% Seurat::GetAssayData()
+  genes.ref <- rownames(mat.ref)
+
+  object <- SPATA2::setActiveExpressionMatrix(object, "scaled")
+  mat.spata <- SPATA2::getExpressionMatrix(object)
+  genes.spata <- rownames(mat.spata)
+
+  # Reduce genes to meta space
+  metaSpace.genes <- as.data.frame(do.call(rbind, metaSpace))
+  genes <- unique(metaSpace.genes$gene)
+
+  message("--- Merge Data ----")
+  mat.ref <- mat.ref[genes, ]
+  mat.spata <- mat.spata[genes, ]
+
+
+  message("--- Run Mapping ----")
+
+  nr_of_random_spots=iter
+
+  ref_meta <-
+    reference@meta.data[colnames(mat.ref),c("nCount_RNA",cell_type_var)] %>%
+    as.data.frame()
+
+
+  #nested groups
+  nested_ref_meta <- ref_meta %>% rownames_to_column("cells") %>% group_by(!!sym(cell_type_var)) %>% nest()
+
+  fitness <- function(x,nr_cells,bc_run){
+
+    if(nr_cells==1){
+      y <- cor(as.numeric(mat.ref[,x==1]),
+               as.numeric(mat.spata[,bc_run]))
+    }else{
+      y <- cor(as.numeric(as.matrix(mat.ref[,x==1]) %>% rowMeans()),
+               as.numeric(mat.spata[,bc_run]))
+    }
+    return(y)
+  }
+  initiate_Population <- function(nr_of_random_spots,
+                                  n_select,
+                                  nested_ref_meta,
+                                  cell_type_var,
+                                  mat.ref){
+
+    select <- nested_ref_meta %>% filter(!!sym(cell_type_var) %in%  n_select$celltypes)
+
+    cells.select <- map(1:nrow(select), .f= ~select$data[[.x]]$cells) %>% unlist()
+    mat.select <- mat.ref[,cells.select]
+    dim(mat.select)
+
+    mat <- matrix(0, nrow=nr_of_random_spots, ncol=ncol(mat.select))
+    colnames(mat)=colnames(mat.select)
+
+
+    for(x in 1:nr_of_random_spots){
+      selected_cells <- map(.x=1:nrow(select), .f=function(i){
+        sample(select$data[i] %>% as.data.frame() %>% pull(cells), n_select$n[i])
+      }) %>% unlist()
+      mat[x,selected_cells] <- 1
+    }
+
+    return(mat)
+
+  }
+  cross_over <- function(parents,cross_over_point=0.5){
+
+    cross_over_select <- c(ncol(parents)*cross_over_point) %>% round()
+
+    cross <- parents
+    cross[1, cross_over_select:ncol(parents)] <- parents[2, cross_over_select:ncol(parents)]
+    cross[2, cross_over_select:ncol(parents)] <- parents[1, cross_over_select:ncol(parents)]
+
+    return(cross)
+  }
+  mutation_GA <- function(offspring_2,nr_mut, nr_offsprings){
+
+    #Create random selection
+    selector <- runif(nr_offsprings, 1, 2) %>% round(digits = 0)
+
+    # Create a mutated and non-mutated output
+    offsprings_mut <- matrix(0, ncol = ncol(offspring_2), nrow=nr_offsprings)
+    colnames(offsprings_mut) <- colnames(offspring_2)
+
+
+    #Run loop for offsprings
+
+    for(u in 1:nr_offsprings){
+
+
+      #Select random cell and mutate from same cell type
+      cells_off <- which(offspring_2[selector[u], ]==1) %>% names()
+      cells_mut <- sample(cells_off, nr_mut)
+      # Get cell type
+
+      ref_sub <- ref_meta[!rownames(ref_meta) %in% cells_off, ]
+      cell_type_select <- ref_meta[cells_mut, cell_type_var]
+
+      new <- list()
+      for(z in 1:nr_mut){
+        new[[z]] <- sample(ref_sub %>%
+                             filter(!!sym(cell_type_var)==cell_type_select[z]) %>%
+                             rownames(),1)
+
+      }
+
+      offsprings_inter <- offspring_2
+
+      #message(length(cells_mut)==length(unlist(new)))
+
+      offsprings_inter[selector[u],cells_mut]=0
+      offsprings_inter[selector[u],unlist(new)]=1
+
+      #message(length(which(offsprings_inter[selector[u], ]==1)))
+      #message(any((cells_off %in% unlist(new)) == T))
+
+      offsprings_mut[u, ] <- offsprings_inter[selector[u], ]
+
+
+    }
+
+    return(offsprings_mut)
+  }
+
+
+
+  pb <- progress_estimated(length(spots))
+  data.new <-map_dfr(.x=1:length(spots),
+                     .f=function(i){
+                       pb$tick()$print()
+                       #print(i)
+                       bc_run <- spots[i]
+                       data <-
+                         scDF %>%
+                         dplyr::filter(barcodes==bc_run) %>%
+                         dplyr::mutate(celltypes=as.character(celltypes)) %>%
+                         dplyr::arrange(celltypes)
+                       nr_cells <- nrow(data)
+                       n_select <- data %>% count(celltypes)
+                       #Initiate population
+                       pop <- initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var,mat.ref)
+                       run <- function(zz){
+
+                                       validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) fitness(pop[j,], nr_cells,bc_run)) %>% unlist()
+                                       names(validate_randoms_select) <- 1:nr_of_random_spots
+                                       validate_randoms_select <- validate_randoms_select[order(-validate_randoms_select)]
+
+                                       #select parents
+                                       parents <- pop[as.numeric(names(validate_randoms_select)[1:2]), ]
+
+                                       #Create Children
+                                       offspring_2 <- cross_over(parents,cross_over_point)
+                                       offspring <- mutation_GA(offspring_2,nr_mut, nr_offsprings)
+
+                                       # remove old parents
+                                       remove <- as.numeric(tail(validate_randoms_select, dim(offspring)[1]) %>% names())
+                                       pop.new <- rbind(pop[-remove, ], offspring)
+
+                                       #update pop
+                                       pop <<- pop.new
+
+                                       return(mean(validate_randoms_select[1:2]))
+
+                                     }
+                       qc <- lapply(1:iter_GA, function(zz) run(zz))
+                       gc()
+                       validate_randoms_select <-
+                         map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells)}) %>%
+                         unlist() %>%
+                         as.data.frame() %>%
+                         rownames_to_column("order") %>%
+                         rename("cor":=.) %>%
+                         arrange(desc(cor))
+                       pop_select <- pop[as.numeric(validate_randoms_select$order[1]), ]
+                       select_cells <- names(which(pop_select==1))
+                       data$best_match <- select_cells
+                       return(data)
+                       })
+
+
+
+  message(paste0("End: ",print(Sys.time())))
+  return(data.new)
+
+
+}
+
 
 #' @title  Run single-cell mapping
 #' @author Dieter Henrik Heiland
