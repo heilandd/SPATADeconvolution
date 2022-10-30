@@ -819,10 +819,6 @@ runMappingGA <- function(object,
   }
 
 
-
-
-
-
   data.new <-furrr::future_map_dfr(.x=1:length(spots),
                                    .f=function(i){
                                      bc_run <- spots[i]
@@ -865,7 +861,7 @@ runMappingGA <- function(object,
                                      qc <- lapply(1:iter_GA, function(zz) run(zz))
                                      gc()
                                      validate_randoms_select <-
-                                       map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells)}) %>%
+                                       map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells,bc_run)}) %>%
                                        unlist() %>%
                                        as.data.frame() %>%
                                        rownames_to_column("order") %>%
@@ -888,6 +884,12 @@ runMappingGA <- function(object,
 
 
 }
+
+
+
+
+
+
 
 
 #' @title  Run single-cell mapping
@@ -1064,7 +1066,7 @@ runMappingGA_solo <- function(object,
   data.new <-map_dfr(.x=1:length(spots),
                      .f=function(i){
                        pb$tick()$print()
-                       #print(i)
+                       print(i)
                        bc_run <- spots[i]
                        data <-
                          scDF %>%
@@ -1101,7 +1103,7 @@ runMappingGA_solo <- function(object,
                        qc <- lapply(1:iter_GA, function(zz) run(zz))
                        gc()
                        validate_randoms_select <-
-                         map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells)}) %>%
+                         map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells, bc_run)}) %>%
                          unlist() %>%
                          as.data.frame() %>%
                          rownames_to_column("order") %>%
