@@ -679,15 +679,9 @@ runMappingGA <- function(object,
                        nr_mut=2,
                        nr_offsprings=7,
                        cross_over_point=0.5,
-                       ram=60
+                       ram=8
 ){
   message(paste0("Start: ",print(Sys.time())))
-
-  base::options(future.fork.enable = TRUE)
-  future::plan("multisession", workers = workers)
-  future::supportsMulticore()
-  base::options(future.globals.maxSize = ram* 10* 1024^2)
-  message("... Run multicore ... ")
 
   spots <- unique(scDF$barcodes)
 
@@ -725,10 +719,10 @@ runMappingGA <- function(object,
   fitness <- function(x,nr_cells,bc_run){
 
     if(nr_cells==1){
-      y <- cor(as.numeric(mat.ref[,x==1]),
+      y <- cor(as.numeric(mat.ref[,names(which(x==1))]),
                as.numeric(mat.spata[,bc_run]))
     }else{
-      y <- cor(as.numeric(as.matrix(mat.ref[,x==1]) %>% rowMeans()),
+      y <- cor(as.numeric(as.matrix(mat.ref[,names(which(x==1))]) %>% rowMeans()),
                as.numeric(mat.spata[,bc_run]))
     }
     return(y)
@@ -862,38 +856,43 @@ runMappingGA <- function(object,
 
   }
 
-  data.new <-furrr::future_map_dfr(.x=1:length(spots),
-                                   .f=function(i){
-                                     bc_run <- spots[i]
-                                     data <-
-                                       scDF %>%
-                                       dplyr::filter(barcodes==bc_run) %>%
-                                       dplyr::mutate(celltypes=as.character(celltypes)) %>%
-                                       dplyr::arrange(celltypes)
+  gc()
+  base::options(future.fork.enable = TRUE)
+  future::plan("multicore", workers = workers)
+  future::supportsMulticore()
+  base::options(future.globals.maxSize = ram* 10* 1024^2)
+  message("... Run multicore ... ")
+  memory <- seq(5,length(spots), by=32)
+  system.time(data.new <-furrr::future_map_dfr(.x=1:length(spots),
+                                               .f=function(i){
+                                                 if(any(i==memory)){gc()}
+                                                 bc_run <- spots[i]
+                                                 data <-
+                                                   scDF %>%
+                                                   dplyr::filter(barcodes==bc_run) %>%
+                                                   dplyr::mutate(celltypes=as.character(celltypes)) %>%
+                                                   dplyr::arrange(celltypes)
+                                                 nr_cells <- nrow(data)
+                                                 n_select <- data %>% count(celltypes)
+                                                 #Initiate population
+                                                 pop <- initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var,mat.ref)
+                                                 qc <- lapply(1:iter_GA, function(zz) run(zz))
+                                                 gc()
+                                                 validate_randoms_select <-
+                                                   map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells, bc_run)}) %>%
+                                                   unlist() %>%
+                                                   as.data.frame() %>%
+                                                   rownames_to_column("order") %>%
+                                                   rename("cor":=.) %>%
+                                                   arrange(desc(cor))
+                                                 pop_select <- pop[as.numeric(validate_randoms_select$order[1]), ]
+                                                 select_cells <- names(which(pop_select==1))
+                                                 data$best_match <- select_cells
+                                                 return(data)
+                                               },
+                                               .options = furrr::furrr_options(seed = TRUE),.progress=T))
 
-                                     nr_cells <- nrow(data)
-                                     n_select <- data %>% count(celltypes)
 
-                                     #Initiate population
-                                     pop <- initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var,mat.ref)
-                                     qc <- lapply(1:iter_GA, function(zz) run(zz))
-                                     gc()
-                                     validate_randoms_select <-
-                                       map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells,bc_run)}) %>%
-                                       unlist() %>%
-                                       as.data.frame() %>%
-                                       rownames_to_column("order") %>%
-                                       rename("cor":=.) %>%
-                                       arrange(desc(cor))
-                                     pop_select <- pop[as.numeric(validate_randoms_select$order[1]), ]
-                                     select_cells <- names(which(pop_select==1))
-
-                                     data$best_match <- select_cells
-
-                                     return(data)
-
-
-                                   }, .options = furrr::furrr_options(seed = TRUE), .progress=T)
 
 
 
@@ -985,10 +984,10 @@ runMappingGA_solo <- function(object,
   fitness <- function(x,nr_cells,bc_run){
 
     if(nr_cells==1){
-      y <- cor(as.numeric(mat.ref[,x==1]),
+      y <- cor(as.numeric(mat.ref[,names(which(x==1))]),
                as.numeric(mat.spata[,bc_run]))
     }else{
-      y <- cor(as.numeric(as.matrix(mat.ref[,x==1]) %>% rowMeans()),
+      y <- cor(as.numeric(as.matrix(mat.ref[,names(which(x==1))]) %>% rowMeans()),
                as.numeric(mat.spata[,bc_run]))
     }
     return(y)
@@ -1128,7 +1127,7 @@ runMappingGA_solo <- function(object,
   data.new <-map_dfr(.x=1:length(spots),
                      .f=function(i){
                        pb$tick()$print()
-                       print(i)
+                       #print(i)
                        bc_run <- spots[i]
                        data <-
                          scDF %>%
@@ -1153,6 +1152,13 @@ runMappingGA_solo <- function(object,
                        data$best_match <- select_cells
                        return(data)
                        })
+
+  .f <- system2("memory_pressure", stdout = TRUE)[28]
+
+
+
+
+
 
 
 

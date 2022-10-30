@@ -16,7 +16,7 @@ runMappingGA(
   nr_mut = 2,
   nr_offsprings = 7,
   cross_over_point = 0.5,
-  ram = 60
+  ram = 8
 )
 }
 \arguments{
