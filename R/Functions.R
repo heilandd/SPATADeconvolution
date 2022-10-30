@@ -735,7 +735,8 @@ runMappingGA <- function(object,
   initiate_Population <- function(nr_of_random_spots,
                                   n_select,
                                   nested_ref_meta,
-                                  cell_type_var){
+                                  cell_type_var,
+                                  mat.ref){
 
     select <- nested_ref_meta %>% filter(!!sym(cell_type_var) %in%  n_select$celltypes)
 
