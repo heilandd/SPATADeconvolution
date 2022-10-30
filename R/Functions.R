@@ -1632,6 +1632,148 @@ mutation_GA <- function(offspring_2,nr_mut, nr_offsprings){
 
 
 
+#' @title  fitness_V1
+#' @author Dieter Henrik Heiland
+#' @description fitness_V1
+#' @inherit
+#' @return
+#' @examples
+#' @export
+#'
+fitness_V1 <- function(x,nr_cells){
+
+  if(nr_cells==1){
+    y <- cor(as.numeric(mat.ref[,x==1]),
+             as.numeric(mat.spata[,bc_run]))
+  }else{
+    y <- cor(as.numeric(mat.ref[,x==1] %>% rowMeans()),
+             as.numeric(mat.spata[,bc_run]))
+  }
+  return(y)
+}
+
+
+#' @title  initiate_Population_V1
+#' @author Dieter Henrik Heiland
+#' @description initiate_Population_V1
+#' @inherit
+#' @return
+#' @examples
+#' @export
+#'
+initiate_Population_V1 <- function(nr_of_random_spots, n_select,nested_ref_meta){
+
+  mat <- matrix(0, nrow=nr_of_random_spots, ncol=ncol(mat.ref))
+  colnames(mat)=colnames(mat.ref)
+  select <- nested_ref_meta %>% filter(!!sym(cell_type_var) %in%  n_select$celltypes)
+
+  for(x in 1:nr_of_random_spots){
+    selected_cells <- map(.x=1:nrow(select), .f=function(i){
+      sample(select$data[i] %>% as.data.frame() %>% pull(cells), n_select$n[i])
+    }) %>% unlist()
+    mat[x,selected_cells] <- 1
+  }
+
+  return(mat)
+
+}
+
+#' @title  cross_over_V1
+#' @author Dieter Henrik Heiland
+#' @description cross_over_V1
+#' @inherit
+#' @return
+#' @examples
+#' @export
+#'
+cross_over_V1 <- function(parents,cross_over_point=0.5){
+
+  parents_out <-
+    parents %>%
+    apply(1, function(x) which(x == 1)) %>% t()
+  #as.data.frame() %>%
+  #filter(!V1 %in% intersect(V1,V2)) %>%
+  #filter(!V2 %in% intersect(V1,V2)) %>%
+  #t()
+
+  #message(length(intersect(parents_out[1,], parents_out[2,])))
+
+  cross_over_select <- c(ncol(parents_out)*cross_over_point) %>% round()
+  parents_out <- parents_out[, 1:cross_over_select]
+
+
+  # cross values
+  parents[1, parents_out[1,]]=0
+  parents[1, parents_out[2,]]=1
+
+  parents[2, parents_out[2,]]=0
+  parents[2, parents_out[1,]]=1
+
+  #message(length(which(parents[1, ]==1)))
+  #message(length(which(parents[2, ]==1)))
+
+
+
+  return(parents)
+}
+
+#' @title  mutation_GA_V1
+#' @author Dieter Henrik Heiland
+#' @description mutation_GA_V1
+#' @inherit
+#' @return
+#' @examples
+#' @export
+#'
+mutation_GA_V1 <- function(offspring_2,nr_mut, nr_offsprings){
+
+  #Create random selection
+  selector <- runif(nr_offsprings, 1, 2) %>% round(digits = 0)
+
+  # Create a mutated and non-mutated output
+  offsprings_mut <- matrix(0, ncol = ncol(offspring_2), nrow=nr_offsprings)
+  colnames(offsprings_mut) <- colnames(offspring_2)
+
+
+  #Run loop for offsprings
+
+  for(u in 1:nr_offsprings){
+
+
+    #Select random cell and mutate from same cell type
+    cells_off <- which(offspring_2[selector[u], ]==1) %>% names()
+    cells_mut <- sample(cells_off, nr_mut)
+    # Get cell type
+
+    ref_sub <- ref_meta[!rownames(ref_meta) %in% cells_off, ]
+    cell_type_select <- ref_meta[cells_mut, cell_type_var]
+
+    new <- list()
+    for(z in 1:nr_mut){
+      new[[z]] <- sample(ref_sub %>%
+                           filter(!!sym(cell_type_var)==cell_type_select[z]) %>%
+                           rownames(),1)
+
+    }
+
+    offsprings_inter <- offspring_2
+
+    #message(length(cells_mut)==length(unlist(new)))
+
+    offsprings_inter[selector[u],cells_mut]=0
+    offsprings_inter[selector[u],unlist(new)]=1
+
+    #message(length(which(offsprings_inter[selector[u], ]==1)))
+    #message(any((cells_off %in% unlist(new)) == T))
+
+    offsprings_mut[u, ] <- offsprings_inter[selector[u], ]
+
+
+  }
+
+  return(offsprings_mut)
+}
+
 
 
 ###############################################################

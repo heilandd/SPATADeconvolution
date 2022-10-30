@@ -54,12 +54,19 @@ rm(ref.new)
 base::options(future.globals.maxSize = 600 * 1024^2)
 metaSpace <- SPATADeconvolution::defineMetaSpace(object, reference, cell_type_var="annotation_level_4", scDF=cell_types)
 gc()
-cell_map <- SPATADeconvolution::runMappingGA(object, reference, cell_type_var="annotation_level_4",
-                                             scDF=cell_types, metaSpace=metaSpace, ram = 8, workers=5)
 
 
+save <- readRDS("save.RDS")
+cell_map <- SPATADeconvolution::runMappingGA(object=save$object,
+                                             reference=save$reference,
+                                             cell_type_var="annotation_level_4",
+                                             scDF=save$cell_types,
+                                             metaSpace=save$metaSpace, ram = 8, workers=5)
 
 
+save <- list(object, reference, cell_types, metaSpace)
+names(save) <- c("object", "reference", "cell_types", "metaSpace")
+saveRDS(save, file="save.RDS")
 
 
 
