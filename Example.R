@@ -55,7 +55,7 @@ base::options(future.globals.maxSize = 600 * 1024^2)
 metaSpace <- SPATADeconvolution::defineMetaSpace(object, reference, cell_type_var="annotation_level_4", scDF=cell_types)
 gc()
 cell_map <- SPATADeconvolution::runMappingGA(object, reference, cell_type_var="annotation_level_4",
-                                             scDF=cell_types, metaSpace=metaSpace, ram = 8, workers=10)
+                                             scDF=cell_types, metaSpace=metaSpace, ram = 8, workers=5)
 
 
 
