@@ -708,7 +708,6 @@ runMappingGA <- function(object,
   mat.ref <- mat.ref[genes, ]
   mat.spata <- mat.spata[genes, ]
 
-  mat.ref %>% dim()
 
   message("--- Run Mapping ----")
 
@@ -724,11 +723,6 @@ runMappingGA <- function(object,
 
   data.new <-furrr::future_map_dfr(.x=1:length(spots),
                                    .f=function(i){
-                                     message("--- Model: oGA will be applied")
-                                     #print(i)
-
-
-
                                      bc_run <- spots[i]
                                      data <-
                                        scDF %>%
@@ -740,34 +734,16 @@ runMappingGA <- function(object,
                                      n_select <- data %>% count(celltypes)
 
                                      #Initiate population
-                                     pop <- SPATADeconvolution::initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var)
-                                     dim(pop)
+                                     pop <- initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var)
 
-                                     qc <- list()
+                                     run <- function(zz){
 
-
-                                     for(zz in 1:iter_GA){
-
-
-                                       # Validate the initial Pop
-
-
-                                       validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) SPATADeconvolution::fitness(pop[j,], nr_cells)) %>% unlist()
+                                       validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) fitness(pop[j,], nr_cells)) %>% unlist()
                                        names(validate_randoms_select) <- 1:nr_of_random_spots
-                                       validate_randoms_select <- out[order(-out)]
-
-                                       #validate_randoms_select <-
-                                      #   lapply(1:nr_of_random_spots, function(j) SPATADeconvolution::fitness(pop[j,], nr_cells)) %>%
-                                      #   unlist() %>%
-                                      #   as.data.frame() %>%
-                                      #   rownames_to_column("order") %>%
-                                      #   rename("cor":=.) %>%
-                                      #   arrange(desc(cor))
+                                       validate_randoms_select <- validate_randoms_select[order(-validate_randoms_select)]
 
                                        #select parents
                                        parents <- pop[as.numeric(names(validate_randoms_select)[1:2]), ]
-                                       qc[[zz]] <- mean(validate_randoms_select[1:2])
-                                       print(qc[[zz]])
 
                                        #Create Children
                                        offspring_2 <- cross_over(parents,cross_over_point)
@@ -778,9 +754,13 @@ runMappingGA <- function(object,
                                        pop.new <- rbind(pop[-remove, ], offspring)
 
                                        #update pop
-                                       pop <- pop.new
+                                       pop <<- pop.new
+
+                                       return(mean(validate_randoms_select[1:2]))
 
                                      }
+
+                                     qc <- lapply(1:iter_GA, function(zz) run(zz))
 
                                      validate_randoms_select <-
                                        map(.x=1:nr_of_random_spots, function(j){fitness(pop[j,], nr_cells)}) %>%
@@ -804,9 +784,7 @@ runMappingGA <- function(object,
                                      return(data)
 
 
-                                   },
-                                   .progress = T,
-                                   .options = furrr::furrr_options(seed = TRUE))
+                                   }, .options = furrr::furrr_options(seed = TRUE), .progress=T)
 
 
 
