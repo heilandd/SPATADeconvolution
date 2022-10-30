@@ -769,7 +769,11 @@ runMappingGA <- function(object,
 
     return(cross)
   }
-  mutation_GA <- function(offspring_2,nr_mut, nr_offsprings){
+  mutation_GA <- function(offspring_2,
+                          nr_mut,
+                          nr_offsprings,
+                          ref_meta,
+                          cell_type_var){
 
     #Create random selection
     selector <- runif(nr_offsprings, 1, 2) %>% round(digits = 0)
@@ -783,22 +787,35 @@ runMappingGA <- function(object,
 
     for(u in 1:nr_offsprings){
 
-
+      #print(u)
       #Select random cell and mutate from same cell type
       cells_off <- which(offspring_2[selector[u], ]==1) %>% names()
-      cells_mut <- sample(cells_off, nr_mut)
+
+      if(length(cells_off)==1){cells_mut <- sample(cells_off, 1)}else{
+        cells_mut <- sample(cells_off, nr_mut)
+      }
+
       # Get cell type
 
       ref_sub <- ref_meta[!rownames(ref_meta) %in% cells_off, ]
       cell_type_select <- ref_meta[cells_mut, cell_type_var]
 
       new <- list()
-      for(z in 1:nr_mut){
-        new[[z]] <- sample(ref_sub %>%
-                             filter(!!sym(cell_type_var)==cell_type_select[z]) %>%
-                             rownames(),1)
 
+      if(length(cells_off)==1){
+        new[[1]] <- sample(ref_sub %>%
+                             filter(!!sym(cell_type_var)==cell_type_select[1]) %>%
+                             rownames(),1)
+      }else{
+        for(z in 1:nr_mut){
+          new[[z]] <- sample(ref_sub %>%
+                               filter(!!sym(cell_type_var)==cell_type_select[z]) %>%
+                               rownames(),1)
+
+        }
       }
+
+
 
       offsprings_inter <- offspring_2
 
@@ -817,7 +834,33 @@ runMappingGA <- function(object,
 
     return(offsprings_mut)
   }
+  run <- function(zz){
+    #print(zz)
+    validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) fitness(pop[j,], nr_cells,bc_run)) %>% unlist()
+    names(validate_randoms_select) <- 1:nr_of_random_spots
+    validate_randoms_select <- validate_randoms_select[order(-validate_randoms_select)]
 
+    #select parents
+    parents <- pop[as.numeric(names(validate_randoms_select)[1:2]), ]
+
+    #Create Children
+    offspring_2 <- cross_over(parents,cross_over_point)
+    offspring <- mutation_GA(offspring_2,
+                             nr_mut,
+                             nr_offsprings,
+                             ref_meta=ref_meta,
+                             cell_type_var = cell_type_var)
+
+    # remove old parents
+    remove <- as.numeric(tail(validate_randoms_select, dim(offspring)[1]) %>% names())
+    pop.new <- rbind(pop[-remove, ], offspring)
+
+    #update pop
+    pop <<- pop.new
+
+    return(mean(validate_randoms_select[1:2]))
+
+  }
 
   data.new <-furrr::future_map_dfr(.x=1:length(spots),
                                    .f=function(i){
@@ -833,31 +876,6 @@ runMappingGA <- function(object,
 
                                      #Initiate population
                                      pop <- initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var,mat.ref)
-
-                                     run <- function(zz){
-
-                                       validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) fitness(pop[j,], nr_cells,bc_run)) %>% unlist()
-                                       names(validate_randoms_select) <- 1:nr_of_random_spots
-                                       validate_randoms_select <- validate_randoms_select[order(-validate_randoms_select)]
-
-                                       #select parents
-                                       parents <- pop[as.numeric(names(validate_randoms_select)[1:2]), ]
-
-                                       #Create Children
-                                       offspring_2 <- cross_over(parents,cross_over_point)
-                                       offspring <- mutation_GA(offspring_2,nr_mut, nr_offsprings)
-
-                                       # remove old parents
-                                       remove <- as.numeric(tail(validate_randoms_select, dim(offspring)[1]) %>% names())
-                                       pop.new <- rbind(pop[-remove, ], offspring)
-
-                                       #update pop
-                                       pop <<- pop.new
-
-                                       return(mean(validate_randoms_select[1:2]))
-
-                                     }
-
                                      qc <- lapply(1:iter_GA, function(zz) run(zz))
                                      gc()
                                      validate_randoms_select <-
@@ -1011,7 +1029,11 @@ runMappingGA_solo <- function(object,
 
     return(cross)
   }
-  mutation_GA <- function(offspring_2,nr_mut, nr_offsprings){
+  mutation_GA <- function(offspring_2,
+                          nr_mut,
+                          nr_offsprings,
+                          ref_meta,
+                          cell_type_var){
 
     #Create random selection
     selector <- runif(nr_offsprings, 1, 2) %>% round(digits = 0)
@@ -1025,22 +1047,35 @@ runMappingGA_solo <- function(object,
 
     for(u in 1:nr_offsprings){
 
-
+      #print(u)
       #Select random cell and mutate from same cell type
       cells_off <- which(offspring_2[selector[u], ]==1) %>% names()
-      cells_mut <- sample(cells_off, nr_mut)
+
+      if(length(cells_off)==1){cells_mut <- sample(cells_off, 1)}else{
+        cells_mut <- sample(cells_off, nr_mut)
+      }
+
       # Get cell type
 
       ref_sub <- ref_meta[!rownames(ref_meta) %in% cells_off, ]
       cell_type_select <- ref_meta[cells_mut, cell_type_var]
 
       new <- list()
-      for(z in 1:nr_mut){
-        new[[z]] <- sample(ref_sub %>%
-                             filter(!!sym(cell_type_var)==cell_type_select[z]) %>%
-                             rownames(),1)
 
+      if(length(cells_off)==1){
+        new[[1]] <- sample(ref_sub %>%
+                             filter(!!sym(cell_type_var)==cell_type_select[1]) %>%
+                             rownames(),1)
+      }else{
+        for(z in 1:nr_mut){
+          new[[z]] <- sample(ref_sub %>%
+                               filter(!!sym(cell_type_var)==cell_type_select[z]) %>%
+                               rownames(),1)
+
+        }
       }
+
+
 
       offsprings_inter <- offspring_2
 
@@ -1060,6 +1095,33 @@ runMappingGA_solo <- function(object,
     return(offsprings_mut)
   }
 
+  run <- function(zz){
+    #print(zz)
+    validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) fitness(pop[j,], nr_cells,bc_run)) %>% unlist()
+    names(validate_randoms_select) <- 1:nr_of_random_spots
+    validate_randoms_select <- validate_randoms_select[order(-validate_randoms_select)]
+
+    #select parents
+    parents <- pop[as.numeric(names(validate_randoms_select)[1:2]), ]
+
+    #Create Children
+    offspring_2 <- cross_over(parents,cross_over_point)
+    offspring <- mutation_GA(offspring_2,
+                             nr_mut,
+                             nr_offsprings,
+                             ref_meta=ref_meta,
+                             cell_type_var = cell_type_var)
+
+    # remove old parents
+    remove <- as.numeric(tail(validate_randoms_select, dim(offspring)[1]) %>% names())
+    pop.new <- rbind(pop[-remove, ], offspring)
+
+    #update pop
+    pop <<- pop.new
+
+    return(mean(validate_randoms_select[1:2]))
+
+  }
 
 
   pb <- progress_estimated(length(spots))
@@ -1077,29 +1139,6 @@ runMappingGA_solo <- function(object,
                        n_select <- data %>% count(celltypes)
                        #Initiate population
                        pop <- initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var,mat.ref)
-                       run <- function(zz){
-
-                                       validate_randoms_select <- lapply(1:nr_of_random_spots, function(j) fitness(pop[j,], nr_cells,bc_run)) %>% unlist()
-                                       names(validate_randoms_select) <- 1:nr_of_random_spots
-                                       validate_randoms_select <- validate_randoms_select[order(-validate_randoms_select)]
-
-                                       #select parents
-                                       parents <- pop[as.numeric(names(validate_randoms_select)[1:2]), ]
-
-                                       #Create Children
-                                       offspring_2 <- cross_over(parents,cross_over_point)
-                                       offspring <- mutation_GA(offspring_2,nr_mut, nr_offsprings)
-
-                                       # remove old parents
-                                       remove <- as.numeric(tail(validate_randoms_select, dim(offspring)[1]) %>% names())
-                                       pop.new <- rbind(pop[-remove, ], offspring)
-
-                                       #update pop
-                                       pop <<- pop.new
-
-                                       return(mean(validate_randoms_select[1:2]))
-
-                                     }
                        qc <- lapply(1:iter_GA, function(zz) run(zz))
                        gc()
                        validate_randoms_select <-
