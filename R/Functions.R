@@ -833,7 +833,7 @@ runMappingGA <- function(object,
                                      n_select <- data %>% count(celltypes)
 
                                      #Initiate population
-                                     pop <- initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var)
+                                     pop <- initiate_Population(nr_of_random_spots, n_select,nested_ref_meta,cell_type_var,mat.ref)
 
                                      run <- function(zz){
 
